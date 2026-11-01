@@ -1,0 +1,266 @@
+{
+  "entities": {
+    "Room": {
+      "title": "Room",
+      "description": "Multiplayer game room state for Akibuki",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique 6-character room code"
+        },
+        "hostId": {
+          "type": "string",
+          "description": "User ID of the room host"
+        },
+        "hostName": {
+          "type": "string",
+          "description": "Nickname of the room host"
+        },
+        "status": {
+          "type": "string",
+          "description": "Game room status (lobby, drawing, turn_ended, round_ended, game_ended)"
+        },
+        "currentRound": {
+          "type": "number",
+          "description": "Current round number (1-10)"
+        },
+        "totalRounds": {
+          "type": "number",
+          "description": "Total rounds in the match"
+        },
+        "currentDrawerId": {
+          "type": "string",
+          "description": "User ID of current drawing player"
+        },
+        "currentDrawerName": {
+          "type": "string",
+          "description": "Name of current drawing player"
+        },
+        "turnNumber": {
+          "type": "number",
+          "description": "Current sequential turn number"
+        },
+        "turnStartTime": {
+          "type": "number",
+          "description": "Epoch timestamp in ms when turn started"
+        },
+        "turnEndTime": {
+          "type": "number",
+          "description": "Epoch timestamp in ms when turn ends"
+        },
+        "secretWordHashes": {
+          "type": "array",
+          "description": "List of SHA-256 hashes of valid answers for serverless zero-knowledge validation"
+        },
+        "winnerId": {
+          "type": "string",
+          "description": "User ID of first correct guesser"
+        },
+        "winnerName": {
+          "type": "string",
+          "description": "Nickname of first correct guesser"
+        },
+        "turnEndReason": {
+          "type": "string",
+          "description": "Reason turn concluded (guessed, timeout)"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "ISO timestamp or server time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp or server time"
+        }
+      },
+      "required": ["id", "hostId", "status"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "Connected player in a room",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "User ID of the player"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display nickname"
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Avatar key"
+        },
+        "isHost": {
+          "type": "boolean",
+          "description": "Whether player is host"
+        },
+        "isOnline": {
+          "type": "boolean",
+          "description": "Connection status"
+        },
+        "totalPoints": {
+          "type": "number",
+          "description": "Current match score"
+        },
+        "correctGuesses": {
+          "type": "number",
+          "description": "Count of correct guesses"
+        },
+        "incorrectGuesses": {
+          "type": "number",
+          "description": "Count of incorrect guesses"
+        },
+        "drawingPoints": {
+          "type": "number",
+          "description": "Points earned while drawing"
+        },
+        "attemptsLeft": {
+          "type": "number",
+          "description": "Guess attempts left in current turn (0-3)"
+        }
+      },
+      "required": ["id", "name", "totalPoints", "attemptsLeft"]
+    },
+    "Stroke": {
+      "title": "Stroke",
+      "description": "Drawing stroke on canvas",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stroke identifier"
+        },
+        "turnNumber": {
+          "type": "number",
+          "description": "Turn number when drawn"
+        },
+        "drawerId": {
+          "type": "string",
+          "description": "ID of drawer"
+        },
+        "color": {
+          "type": "string",
+          "description": "Hex stroke color"
+        },
+        "size": {
+          "type": "number",
+          "description": "Stroke brush width"
+        },
+        "tool": {
+          "type": "string",
+          "description": "pen or eraser"
+        },
+        "points": {
+          "type": "array",
+          "description": "Flattened normalized [x, y, x, y] coordinate array"
+        },
+        "seq": {
+          "type": "number",
+          "description": "Stroke sequence number for replay"
+        }
+      },
+      "required": ["id", "turnNumber", "drawerId", "points"]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Group chat message and guess attempts",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Message ID"
+        },
+        "turnNumber": {
+          "type": "number",
+          "description": "Turn number message was sent in"
+        },
+        "senderId": {
+          "type": "string",
+          "description": "Sender User ID"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Sender Nickname"
+        },
+        "senderAvatar": {
+          "type": "string",
+          "description": "Sender Avatar"
+        },
+        "text": {
+          "type": "string",
+          "description": "Message text"
+        },
+        "type": {
+          "type": "string",
+          "description": "chat, guess, correct, wrong, system"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Timestamp ms"
+        }
+      },
+      "required": ["id", "senderId", "senderName", "text", "type"]
+    },
+    "SecretTurn": {
+      "title": "SecretTurn",
+      "description": "Secret word details accessible only to the active drawer until revealed",
+      "type": "object",
+      "properties": {
+        "turnNumber": {
+          "type": "number",
+          "description": "Turn number"
+        },
+        "wordId": {
+          "type": "string",
+          "description": "Word ID from word bank"
+        },
+        "wordEn": {
+          "type": "string",
+          "description": "Secret word in English"
+        },
+        "wordBn": {
+          "type": "string",
+          "description": "Secret word in Bangla"
+        },
+        "category": {
+          "type": "string",
+          "description": "Word category"
+        },
+        "hint": {
+          "type": "string",
+          "description": "Word hint"
+        },
+        "revealed": {
+          "type": "boolean",
+          "description": "Whether turn is finished and word is revealed"
+        }
+      },
+      "required": ["turnNumber", "wordEn", "wordBn", "revealed"]
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}": {
+      "schema": "Room",
+      "description": "Multiplayer game room documents"
+    },
+    "/rooms/{roomId}/players/{playerId}": {
+      "schema": "Player",
+      "description": "Players in room"
+    },
+    "/rooms/{roomId}/strokes/{strokeId}": {
+      "schema": "Stroke",
+      "description": "Real-time canvas drawing strokes"
+    },
+    "/rooms/{roomId}/chat/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Chat messages and guesses"
+    },
+    "/rooms/{roomId}/secrets/{secretId}": {
+      "schema": "SecretTurn",
+      "description": "Secret word information for active turn"
+    }
+  }
+}

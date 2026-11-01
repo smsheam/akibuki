@@ -1,0 +1,6 @@
+{
+  "name": "আঁকিবুঁকি - Akibuki",
+  "description": "অনলাইন মাল্টিপ্লেয়ার বাংলা ড্রয়িং ও গেসিং গেম। আঁকো, বন্ধুদের সাথে চ্যাটে আন্দাজ করো এবং পয়েন্ট জেতো!",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
