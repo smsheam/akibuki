@@ -3,7 +3,7 @@ export interface RoomSettings {
   rounds: number; // 1-10
   drawTime: number; // 30, 45, 60, 90, 120
   waitTime: number; // 5, 10, 15
-  maxGuesses: number; // fixed at 3
+  maxGuesses: number; // 4 attempts (1st free)
   language: 'bn' | 'en' | 'mixed';
   difficulty: 'easy' | 'medium' | 'mixed';
   negativeMarking: boolean;
@@ -58,11 +58,27 @@ export interface RevealedWord {
   hint: string;
 }
 
+export interface WordHint {
+  wordCount: number;
+  letterLengths: number[];
+  dashes: string;
+  labelBn: string;
+  labelEn: string;
+}
+
+export type RoomStatus =
+  | 'lobby'
+  | 'selecting_word'
+  | 'drawing'
+  | 'turn_ended'
+  | 'round_ended'
+  | 'game_ended';
+
 export interface RoomState {
   id: string;
   hostId: string;
   hostName: string;
-  status: 'lobby' | 'drawing' | 'turn_ended' | 'round_ended' | 'game_ended';
+  status: RoomStatus;
   settings: RoomSettings;
   currentRound: number;
   totalRounds: number;
@@ -82,4 +98,7 @@ export interface RoomState {
   turnEndReason: 'correct_guess' | 'timeout' | null;
   lastStrokeClearAt: number;
   usedWordIds: string[];
+  wordOptions?: { id: string; en: string; bn: string; category: string; difficulty: 'easy' | 'medium'; hint: string }[];
+  wordHint?: WordHint;
+  preDrawRevealEnd?: number;
 }

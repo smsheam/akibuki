@@ -1,15 +1,13 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   RotateCcw,
-  RotateCw,
   Trash2,
   Eraser,
   PenTool,
   Clock,
-  Sparkles,
   Lock,
 } from 'lucide-react';
-import { Stroke } from '../types/game';
+import { Stroke, WordHint } from '../types/game';
 import { Language, TRANSLATIONS } from '../data/translations';
 
 interface DrawingCanvasProps {
@@ -24,8 +22,9 @@ interface DrawingCanvasProps {
   totalRounds: number;
   turnNumber: number;
   attemptsLeft: number;
-  categoryClue?: string;
+  wordHint?: WordHint | null;
   onSendStroke: (stroke: Omit<Stroke, 'id' | 'seq'>) => void;
+  onUndoStroke: (strokeId: string) => void;
   onClearCanvas: () => void;
   strokes: Stroke[];
   lastStrokeClearAt: number;
@@ -66,8 +65,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   totalRounds,
   turnNumber,
   attemptsLeft,
-  categoryClue,
+  wordHint,
   onSendStroke,
+  onUndoStroke,
   onClearCanvas,
   strokes,
   lastStrokeClearAt,
@@ -82,10 +82,6 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const [activeColor, setActiveColor] = useState('#000000');
   const [brushSize, setBrushSize] = useState(6);
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
-
-  // Local stroke history for undo/redo
-  const [undoStack, setUndoStack] = useState<Stroke[]>([]);
-  const [redoStack, setRedoStack] = useState<Stroke[]>([]);
 
   // Redraw canvas from strokes array
   const redrawAllStrokes = useCallback(
@@ -107,7 +103,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
         if (s.isDeleted || !s.points || s.points.length < 2) return;
 
         ctx.beginPath();
-        ctx.strokeStyle = s.tool === 'eraser' ? '#ffffff' : s.color;
+        ctx.strokeStyle = (s.tool === 'eraser' || s.color === '#ffffff') ? '#ffffff' : s.color;
         ctx.lineWidth = (s.size * width) / 1000;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -131,7 +127,7 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     []
   );
 
-  // Resize canvas keeping internal coordinate resolution at 1000x800 for high DPI
+  // Resize canvas keeping internal coordinate resolution at high DPI
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -201,10 +197,11 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     const width = canvas.width;
     const height = canvas.height;
+    const effectiveWidth = tool === 'eraser' ? Math.max(brushSize * 3.5, 24) : brushSize;
 
     ctx.beginPath();
     ctx.strokeStyle = tool === 'eraser' ? '#ffffff' : activeColor;
-    ctx.lineWidth = (brushSize * width) / 1000;
+    ctx.lineWidth = (effectiveWidth * width) / 1000;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.moveTo((pt[0] * width) / 1000, (pt[1] * height) / 1000);
@@ -231,6 +228,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     const width = canvas.width;
     const height = canvas.height;
+    const effectiveWidth = tool === 'eraser' ? Math.max(brushSize * 3.5, 24) : brushSize;
+
+    ctx.strokeStyle = tool === 'eraser' ? '#ffffff' : activeColor;
+    ctx.lineWidth = (effectiveWidth * width) / 1000;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
 
     ctx.lineTo((pt[0] * width) / 1000, (pt[1] * height) / 1000);
     ctx.stroke();
@@ -241,11 +244,12 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     isDrawingRef.current = false;
 
     if (currentPointsRef.current.length >= 2) {
+      const effectiveWidth = tool === 'eraser' ? Math.max(brushSize * 3.5, 24) : brushSize;
       const strokeData: Omit<Stroke, 'id' | 'seq'> = {
         turnNumber,
         drawerId: drawerName,
-        color: activeColor,
-        size: brushSize,
+        color: tool === 'eraser' ? '#ffffff' : activeColor,
+        size: effectiveWidth,
         tool,
         points: [...currentPointsRef.current],
       };
@@ -254,22 +258,28 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     currentPointsRef.current = [];
   };
 
-  // Undo / Redo handlers
+  // Undo Handler: deletes the last stroke
   const handleUndo = () => {
     if (strokes.length === 0) return;
     const last = strokes[strokes.length - 1];
-    setRedoStack((prev) => [...prev, last]);
-    // Filter local display and clear
-    onClearCanvas();
-    const remaining = strokes.slice(0, -1);
-    remaining.forEach((s) => onSendStroke(s));
+    if (last && last.id) {
+      // Local immediate optimistic update
+      redrawAllStrokes(strokes.slice(0, -1));
+      onUndoStroke(last.id);
+    }
   };
 
-  const handleRedo = () => {
-    if (redoStack.length === 0) return;
-    const next = redoStack[redoStack.length - 1];
-    setRedoStack((prev) => prev.slice(0, -1));
-    onSendStroke(next);
+  // Clear Canvas Handler: immediately wipes local context and triggers cloud sync
+  const handleClearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+    onClearCanvas();
   };
 
   // Timer visual progress
@@ -277,72 +287,69 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const isTimeRunningOut = timeRemaining <= 10;
 
   return (
-    <div className="flex flex-col h-full w-full bg-white dark:bg-slate-900 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden relative">
-      {/* Top Banner: Round Info, Secret Word (Drawer) or Drawing Status (Guesser), Timer */}
-      <div className="px-3 sm:px-4 py-2.5 bg-slate-50 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between gap-2 shrink-0">
+    <div className="flex flex-col h-full w-full bg-white dark:bg-black rounded-3xl shadow-xl border-2 border-zinc-200 dark:border-zinc-800 overflow-hidden relative">
+      {/* 1. Large Top Word Banner for Drawer */}
+      {isDrawer && secretWord && (
+        <div className="w-full bg-black text-white dark:bg-white dark:text-black px-3.5 sm:px-6 py-2.5 flex items-center justify-between border-b-2 border-black dark:border-white shadow-sm shrink-0">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <span className="text-[10px] sm:text-xs uppercase font-black tracking-wider bg-white/20 dark:bg-black/20 px-2 py-0.5 rounded-md">
+              {language === 'bn' ? 'আপনার শব্দ:' : 'Your Word:'}
+            </span>
+            <span className="text-xl sm:text-3xl font-black tracking-tight">
+              {secretWord.bn}
+            </span>
+            <span className="text-sm sm:text-lg font-extrabold opacity-85">
+              ({secretWord.en})
+            </span>
+          </div>
+          {secretWord.hint && (
+            <span className="hidden md:inline-block text-xs font-bold opacity-90 bg-white/10 dark:bg-black/10 px-3 py-1 rounded-full">
+              💡 {secretWord.hint}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* 2. Top Info Bar: Round Info, Guesser Clue (Word Count + Blanks, NO Category), Timer */}
+      <div className="px-3 sm:px-4 py-2 bg-zinc-100 dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-2 shrink-0">
         {/* Left: Round & Drawer info */}
         <div className="flex items-center gap-2">
           <span className="text-xl sm:text-2xl">{drawerAvatar}</span>
           <div>
             <div className="flex items-center gap-1.5">
-              <span className="font-black text-xs sm:text-sm text-slate-800 dark:text-slate-100">
+              <span className="font-black text-xs sm:text-sm text-black dark:text-white">
                 {isDrawer ? (language === 'bn' ? 'আপনি আঁকছেন' : 'You are drawing') : `${drawerName} ${t.isDrawing}`}
               </span>
             </div>
-            <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500">
+            <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400">
               {language === 'bn' ? `রাউন্ড ${currentRound}/${totalRounds}` : `Round ${currentRound}/${totalRounds}`}
             </span>
           </div>
         </div>
 
-        {/* Center: Secret Word (Drawer ONLY!) or Guess Attempts Badge (Guessers) */}
-        <div className="text-center">
-          {isDrawer ? (
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-2xl bg-amber-500 text-white shadow-md shadow-amber-500/20">
-              <Sparkles className="w-4 h-4" />
-              <div>
-                <span className="font-black text-xs sm:text-sm">
-                  {secretWord ? `${secretWord.bn} (${secretWord.en})` : '...'}
-                </span>
-                {secretWord?.hint && (
-                  <span className="text-[10px] opacity-90 hidden sm:inline ml-1 font-medium">
-                    • {secretWord.hint}
-                  </span>
-                )}
-              </div>
+        {/* Center: Guesser Hints (Word Count & Dashes, NO CATEGORY) */}
+        {!isDrawer && (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] sm:text-xs font-black px-2 py-0.5 rounded-lg bg-zinc-200 dark:bg-zinc-800 text-black dark:text-white border border-zinc-300 dark:border-zinc-700">
+              {wordHint ? wordHint.labelBn : '১টি শব্দ'}
+            </span>
+            <span className="font-mono text-xs sm:text-base font-black tracking-[0.25em] text-black dark:text-white bg-white dark:bg-black px-3 py-0.5 rounded-lg border border-zinc-300 dark:border-zinc-700 shadow-inner">
+              {wordHint ? wordHint.dashes : '_ _ _ _'}
+            </span>
+            <div className="hidden sm:inline-flex items-center gap-1 text-[11px] font-bold text-zinc-500">
+              <span>{t.attemptsLeft}:</span>
+              <span className="font-black text-black dark:text-white">{attemptsLeft}/4</span>
             </div>
-          ) : (
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-2xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-sm">
-              {categoryClue && (
-                <span className="text-[10px] sm:text-xs font-black text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 px-2 py-0.5 rounded-lg">
-                  {categoryClue}
-                </span>
-              )}
-              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
-                {t.attemptsLeft}:
-              </span>
-              <span
-                className={`text-xs font-black px-2 py-0.5 rounded-lg ${
-                  attemptsLeft === 0
-                    ? 'bg-rose-500 text-white'
-                    : attemptsLeft === 1
-                    ? 'bg-amber-500 text-white'
-                    : 'bg-emerald-500 text-white'
-                }`}
-              >
-                {attemptsLeft}/3
-              </span>
-            </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Right: Timer Clock */}
         <div className="flex items-center gap-1.5">
           <div
-            className={`flex items-center gap-1 px-3 py-1 rounded-2xl font-black text-xs sm:text-sm shadow-sm transition ${
+            className={`flex items-center gap-1 px-3 py-1 rounded-2xl font-black text-xs sm:text-sm shadow-sm transition border ${
               isTimeRunningOut
-                ? 'bg-rose-500 text-white animate-pulse'
-                : 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800'
+                ? 'bg-black text-white dark:bg-white dark:text-black border-black dark:border-white animate-pulse'
+                : 'bg-white dark:bg-zinc-900 text-black dark:text-white border-zinc-300 dark:border-zinc-700'
             }`}
           >
             <Clock className="w-4 h-4" />
@@ -352,17 +359,19 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       </div>
 
       {/* Timer Progress Bar */}
-      <div className="w-full bg-slate-100 dark:bg-slate-800 h-1 shrink-0">
+      <div className="w-full bg-zinc-200 dark:bg-zinc-800 h-1 shrink-0">
         <div
           className={`h-full transition-all duration-1000 ${
-            isTimeRunningOut ? 'bg-rose-500' : 'bg-gradient-to-r from-amber-500 to-indigo-500'
+            isTimeRunningOut ? 'bg-black dark:bg-white animate-pulse' : 'bg-black dark:bg-white'
           }`}
           style={{ width: `${timerPercentage}%` }}
         />
       </div>
 
       {/* Interactive Drawing Canvas */}
-      <div className="relative flex-1 bg-white touch-none cursor-crosshair min-h-[220px] sm:min-h-[340px]">
+      <div className={`relative flex-1 bg-white touch-none min-h-[220px] sm:min-h-[300px] ${
+        tool === 'eraser' ? 'cursor-cell' : 'cursor-crosshair'
+      }`}>
         <canvas
           ref={canvasRef}
           onMouseDown={handlePointerDown}
@@ -377,9 +386,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
         {/* Lock Overlay if turn is locked */}
         {isTurnLocked && (
-          <div className="absolute inset-0 bg-black/10 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
-            <div className="px-4 py-2 rounded-2xl bg-white/90 dark:bg-slate-900/90 shadow-lg border border-slate-200 dark:border-slate-700 flex items-center gap-2 text-xs font-black text-slate-700 dark:text-slate-200">
-              <Lock className="w-4 h-4 text-amber-500" />
+          <div className="absolute inset-0 bg-black/15 backdrop-blur-[1px] flex items-center justify-center pointer-events-none">
+            <div className="px-4 py-2 rounded-2xl bg-white dark:bg-black shadow-lg border-2 border-black dark:border-white flex items-center gap-2 text-xs font-black text-black dark:text-white">
+              <Lock className="w-4 h-4 text-black dark:text-white" />
               <span>{language === 'bn' ? 'পালা সমাপ্ত' : 'Turn Ended'}</span>
             </div>
           </div>
@@ -388,9 +397,9 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
       {/* Drawer Control Toolbar (Visible ONLY to the drawer during their turn) */}
       {isDrawer && !isTurnLocked && (
-        <div className="p-2 sm:p-3 bg-slate-50 dark:bg-slate-800/90 border-t border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-2 shrink-0">
+        <div className="p-2 sm:p-2.5 bg-zinc-100 dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-1.5 shrink-0">
           {/* Colors Palette */}
-          <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto py-1 max-w-[280px] sm:max-w-none">
+          <div className="flex items-center gap-1 sm:gap-1.5 overflow-x-auto py-0.5 max-w-[270px] sm:max-w-none">
             {COLORS.map((c) => (
               <button
                 key={c}
@@ -400,10 +409,10 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
                   setTool('pen');
                 }}
                 className={`w-6 h-6 sm:w-7 sm:h-7 rounded-full transition-all shrink-0 ${
-                  c === '#ffffff' ? 'border border-slate-300' : ''
+                  c === '#ffffff' ? 'border border-zinc-400' : ''
                 } ${
                   activeColor === c && tool === 'pen'
-                    ? 'scale-125 ring-2 ring-amber-400 ring-offset-2'
+                    ? 'scale-125 ring-2 ring-black dark:ring-white ring-offset-2'
                     : 'hover:scale-110'
                 }`}
                 style={{ backgroundColor: c }}
@@ -412,18 +421,48 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
             ))}
           </div>
 
-          {/* Tools: Brush Sizes, Eraser, Clear, Undo, Redo */}
+          {/* Tools: Brush Sizes, Eraser, Clear, Undo */}
           <div className="flex items-center gap-1 sm:gap-1.5">
+            {/* Pen Tool button */}
+            <button
+              type="button"
+              onClick={() => setTool('pen')}
+              className={`p-1.5 sm:p-2 rounded-xl text-xs font-bold transition border ${
+                tool === 'pen'
+                  ? 'bg-black text-white dark:bg-white dark:text-black border-black dark:border-white shadow-sm'
+                  : 'bg-white dark:bg-zinc-800 text-black dark:text-white border-zinc-300 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+              }`}
+              title="Pen"
+            >
+              <PenTool className="w-4 h-4" />
+            </button>
+
+            {/* Eraser Toggle */}
+            <button
+              type="button"
+              onClick={() => setTool(tool === 'eraser' ? 'pen' : 'eraser')}
+              className={`p-1.5 sm:p-2 rounded-xl text-xs font-bold transition border ${
+                tool === 'eraser'
+                  ? 'bg-black text-white dark:bg-white dark:text-black border-black dark:border-white shadow-sm'
+                  : 'bg-white dark:bg-zinc-800 text-black dark:text-white border-zinc-300 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700'
+              }`}
+              title={t.eraser}
+            >
+              <Eraser className="w-4 h-4" />
+            </button>
+
+            <div className="w-px h-5 bg-zinc-300 dark:bg-zinc-700 mx-0.5" />
+
             {/* Brush sizes */}
             {BRUSH_SIZES.map((b) => (
               <button
                 key={b.label}
                 type="button"
                 onClick={() => setBrushSize(b.size)}
-                className={`w-7 h-7 rounded-xl text-xs font-black flex items-center justify-center transition ${
+                className={`w-7 h-7 rounded-xl text-xs font-black flex items-center justify-center transition border ${
                   brushSize === b.size
-                    ? 'bg-amber-500 text-white shadow-sm'
-                    : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200'
+                    ? 'bg-black text-white dark:bg-white dark:text-black border-black dark:border-white shadow-sm'
+                    : 'bg-white dark:bg-zinc-800 text-black dark:text-white border-zinc-300 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700'
                 }`}
                 title={`Brush ${b.label}`}
               >
@@ -431,38 +470,24 @@ export const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
               </button>
             ))}
 
-            <div className="w-px h-5 bg-slate-300 dark:bg-slate-700 mx-0.5" />
-
-            {/* Eraser Toggle */}
-            <button
-              type="button"
-              onClick={() => setTool(tool === 'eraser' ? 'pen' : 'eraser')}
-              className={`p-1.5 sm:p-2 rounded-xl text-xs font-bold transition ${
-                tool === 'eraser'
-                  ? 'bg-rose-500 text-white shadow-sm'
-                  : 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200'
-              }`}
-              title={t.eraser}
-            >
-              <Eraser className="w-4 h-4" />
-            </button>
+            <div className="w-px h-5 bg-zinc-300 dark:bg-zinc-700 mx-0.5" />
 
             {/* Undo */}
             <button
               type="button"
               onClick={handleUndo}
               disabled={strokes.length === 0}
-              className="p-1.5 sm:p-2 rounded-xl bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 disabled:opacity-40 transition"
+              className="p-1.5 sm:p-2 rounded-xl bg-white dark:bg-zinc-800 text-black dark:text-white border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-200 dark:hover:bg-zinc-700 disabled:opacity-30 transition font-bold"
               title={t.undo}
             >
               <RotateCcw className="w-4 h-4" />
             </button>
 
-            {/* Clear Canvas */}
+            {/* Clear Canvas (Delete) */}
             <button
               type="button"
-              onClick={onClearCanvas}
-              className="p-1.5 sm:p-2 rounded-xl bg-rose-50 text-rose-600 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-400 font-bold transition"
+              onClick={handleClearCanvas}
+              className="p-1.5 sm:p-2 rounded-xl bg-white dark:bg-zinc-800 text-black dark:text-white border border-zinc-300 dark:border-zinc-700 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black font-bold transition"
               title={t.clearCanvas}
             >
               <Trash2 className="w-4 h-4" />

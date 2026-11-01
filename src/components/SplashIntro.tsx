@@ -6,7 +6,7 @@ interface SplashIntroProps {
 
 export const SplashIntro: React.FC<SplashIntroProps> = ({ onComplete }) => {
   useEffect(() => {
-    // Quick, smooth minimalist transition (850ms) instead of 3-second waiting timer
+    // Quick, smooth minimalist transition (850ms)
     const timer = setTimeout(() => {
       onComplete();
     }, 850);
@@ -17,30 +17,25 @@ export const SplashIntro: React.FC<SplashIntroProps> = ({ onComplete }) => {
   return (
     <div
       onClick={onComplete}
-      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-slate-950 text-white cursor-pointer select-none transition-opacity duration-300"
+      className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black text-white cursor-pointer select-none transition-opacity duration-300"
     >
-      {/* Delicate ambient center flare */}
-      <div className="absolute w-80 h-80 bg-gradient-to-tr from-amber-500/15 via-rose-500/15 to-indigo-500/15 rounded-full blur-3xl pointer-events-none animate-pulse" />
-
       {/* Minimalist Centered Brand */}
       <div className="relative flex flex-col items-center text-center space-y-3 px-6 animate-fade-in">
-        {/* Glowing Painter Dot */}
-        <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-amber-400 via-rose-500 to-indigo-500 p-0.5 shadow-lg shadow-rose-500/25 mb-1">
-          <div className="w-full h-full bg-slate-950 rounded-[14px] flex items-center justify-center">
-            <span className="text-lg">🎨</span>
-          </div>
+        {/* Minimalist Painter Badge */}
+        <div className="w-11 h-11 rounded-2xl bg-zinc-900 border border-zinc-700 flex items-center justify-center mb-1 shadow-lg">
+          <span className="text-xl">🎨</span>
         </div>
 
-        {/* Minimalist Aesthetic Wordmark */}
+        {/* Minimalist Aesthetic Wordmark in Pure White */}
         <h1
-          className="text-4xl sm:text-6xl font-black tracking-tight bg-gradient-to-r from-amber-300 via-rose-400 to-indigo-300 bg-clip-text text-transparent drop-shadow-sm"
+          className="text-4xl sm:text-6xl font-black tracking-tight text-white drop-shadow-sm"
           style={{ fontFamily: "'Hind Siliguri', 'Kalpurush', system-ui, sans-serif" }}
         >
           আঁকিবুঁকি
         </h1>
 
         {/* Developer Credit */}
-        <p className="text-xs sm:text-sm font-semibold tracking-widest uppercase text-slate-400">
+        <p className="text-xs sm:text-sm font-semibold tracking-widest uppercase text-zinc-400 font-mono">
           Developed by Sheam
         </p>
       </div>

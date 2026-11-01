@@ -13,7 +13,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { ChatMessage, Player, RevealedWord, RoomSettings, RoomState, Stroke } from '../types/game';
+import { ChatMessage, Player, RevealedWord, RoomSettings, RoomState, Stroke, WordHint } from '../types/game';
 import { WORDS_DATABASE, WordItem } from '../data/words';
 import { computeHashes, normalizeText, sha256Hex } from '../utils/crypto';
 
@@ -22,7 +22,7 @@ const DEFAULT_SETTINGS: RoomSettings = {
   rounds: 3,
   drawTime: 60,
   waitTime: 10,
-  maxGuesses: 3,
+  maxGuesses: 4,
   language: 'mixed',
   difficulty: 'easy',
   negativeMarking: true,
@@ -38,6 +38,85 @@ function generateRoomCode(): string {
   return code;
 }
 
+export function pickThreeWords(
+  settings: RoomSettings,
+  usedWordIds: string[] = []
+): WordItem[] {
+  let eligible = WORDS_DATABASE.filter((w) => {
+    if (usedWordIds.includes(w.id)) return false;
+    if (settings.difficulty !== 'mixed' && w.difficulty !== settings.difficulty) return false;
+    return true;
+  });
+
+  if (eligible.length < 3) {
+    eligible = WORDS_DATABASE.filter((w) => {
+      if (settings.difficulty !== 'mixed' && w.difficulty !== settings.difficulty) return false;
+      return true;
+    });
+  }
+
+  const shuffled = [...eligible].sort(() => Math.random() - 0.5);
+  const selected: WordItem[] = [];
+  const seenIds = new Set<string>();
+  for (const item of shuffled) {
+    if (!seenIds.has(item.id)) {
+      seenIds.add(item.id);
+      selected.push(item);
+    }
+    if (selected.length === 3) break;
+  }
+  let fallbackIdx = 0;
+  while (selected.length < 3 && fallbackIdx < WORDS_DATABASE.length) {
+    const candidate = WORDS_DATABASE[fallbackIdx++];
+    if (!seenIds.has(candidate.id)) {
+      seenIds.add(candidate.id);
+      selected.push(candidate);
+    }
+  }
+  return selected;
+}
+
+export function generateWordHint(
+  word: WordItem,
+  language: 'bn' | 'en' | 'mixed'
+): WordHint {
+  const isEnMode = language === 'en';
+  const targetText = isEnMode ? word.en : word.bn;
+  const words = targetText.trim().split(/\s+/).filter(Boolean);
+  const wordCount = words.length;
+
+  const letterLengths = words.map((w) => {
+    const clean = w.replace(/[^a-zA-Z0-9\u0980-\u09FF]/g, '');
+    return Array.from(clean).length || w.length;
+  });
+
+  const dashes = words
+    .map((w) => {
+      const len = Array.from(w.replace(/[^a-zA-Z0-9\u0980-\u09FF]/g, '')).length || w.length;
+      return Array(len).fill('_').join(' ');
+    })
+    .join('    ');
+
+  const toBnDigit = (n: number) => {
+    const bnNums = ['০', '১', '২', '৩', '৪', '৫', '৬', '৭', '৮', '৯'];
+    return String(n)
+      .split('')
+      .map((c) => bnNums[Number(c)] || c)
+      .join('');
+  };
+
+  const labelBn = `${toBnDigit(wordCount)}টি শব্দ (${letterLengths.map(toBnDigit).join(' + ')} অক্ষর)`;
+  const labelEn = `${wordCount} word${wordCount > 1 ? 's' : ''} (${letterLengths.join(' + ')} letters)`;
+
+  return {
+    wordCount,
+    letterLengths,
+    dashes,
+    labelBn,
+    labelEn,
+  };
+}
+
 export function pickNextWord(
   settings: RoomSettings,
   usedWordIds: string[]
@@ -49,7 +128,6 @@ export function pickNextWord(
   });
 
   if (eligible.length === 0) {
-    // If all used, allow recycling
     eligible = WORDS_DATABASE.filter((w) => {
       if (settings.difficulty !== 'mixed' && w.difficulty !== settings.difficulty) return false;
       return true;
@@ -68,13 +146,28 @@ export function getAllAcceptedAnswers(word: WordItem): string[] {
   return Array.from(set);
 }
 
-// Create Room
+// Create Room (with simultaneous multi-room support and code collision verification)
 export async function createRoom(
   hostPlayer: { id: string; name: string; avatar: string },
   customSettings?: Partial<RoomSettings>
 ): Promise<string> {
-  const roomId = generateRoomCode();
-  const roomRef = doc(db, 'rooms', roomId);
+  let roomId = generateRoomCode();
+  let roomRef = doc(db, 'rooms', roomId);
+  
+  // Guarantee unique room code even with simultaneous creators
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      const snap = await getDoc(roomRef);
+      if (!snap.exists()) {
+        break;
+      }
+      roomId = generateRoomCode();
+      roomRef = doc(db, 'rooms', roomId);
+    } catch {
+      break;
+    }
+  }
+
   const playerRef = doc(db, 'rooms', roomId, 'players', hostPlayer.id);
 
   const initialSettings: RoomSettings = {
@@ -119,7 +212,7 @@ export async function createRoom(
     drawingPoints: 0,
     successfulDrawings: 0,
     failedDrawings: 0,
-    attemptsLeft: 3,
+    attemptsLeft: 4, // 4 attempts (1st is free)
     hasGuessedCorrectly: false,
     lastActive: Date.now(),
   };
@@ -205,7 +298,7 @@ export async function joinRoom(
       drawingPoints: 0,
       successfulDrawings: 0,
       failedDrawings: 0,
-      attemptsLeft: 3,
+      attemptsLeft: 4, // 4 attempts (1st free)
       hasGuessedCorrectly: false,
       lastActive: Date.now(),
     };
@@ -307,34 +400,26 @@ export async function startGame(
   const firstDrawerId = shuffledIds[0];
   const firstDrawer = players.find((p) => p.id === firstDrawerId) || players[0];
 
-  const word = pickNextWord(room.settings, []);
-  const acceptedAnswers = getAllAcceptedAnswers(word);
-  const hashes = await computeHashes(acceptedAnswers);
-
-  const drawTimeMs = (room.settings.drawTime || 60) * 1000;
+  const wordOptions = pickThreeWords(room.settings, []);
   const now = Date.now();
 
   try {
     const batch = writeBatch(db);
 
-    // Save secret word in private secrets collection
+    // Save candidate options in private secrets collection
     const secretRef = doc(db, 'rooms', roomId, 'secrets', 'currentTurn');
     batch.set(secretRef, {
       turnNumber: 1,
-      wordId: word.id,
-      wordEn: word.en,
-      wordBn: word.bn,
-      category: word.category,
-      hint: word.hint,
-      acceptedAlternatives: acceptedAnswers,
+      drawerId: firstDrawer.id,
+      wordOptions,
       revealed: false,
       createdAt: now,
     });
 
-    // Update room document
+    // Update room document to 'selecting_word' status
     const roomRef = doc(db, 'rooms', roomId);
     batch.update(roomRef, {
-      status: 'drawing',
+      status: 'selecting_word',
       currentRound: 1,
       totalRounds: room.settings.rounds || 3,
       drawerOrder: shuffledIds,
@@ -343,16 +428,18 @@ export async function startGame(
       currentDrawerName: firstDrawer.name,
       turnNumber: 1,
       turnStartTime: now,
-      turnEndTime: now + drawTimeMs,
-      activeWordId: word.id,
-      activeCategory: word.category,
-      secretWordHashes: hashes,
+      turnEndTime: 0,
+      activeWordId: '',
+      activeCategory: '',
+      secretWordHashes: [],
+      wordHint: null,
+      wordOptions,
       revealedWord: null,
       winnerId: null,
       winnerName: null,
       turnEndReason: null,
       lastStrokeClearAt: now,
-      usedWordIds: [word.id],
+      usedWordIds: [],
     });
 
     // Reset all players' attempts and scores for new match
@@ -365,9 +452,15 @@ export async function startGame(
         drawingPoints: 0,
         successfulDrawings: 0,
         failedDrawings: 0,
-        attemptsLeft: 3,
+        attemptsLeft: 4, // 4 attempts (1st free)
         hasGuessedCorrectly: false,
       });
+    });
+
+    // Clean up previous strokes if any
+    const strokesSnap = await getDocs(collection(db, 'rooms', roomId, 'strokes'));
+    strokesSnap.forEach((d) => {
+      batch.delete(d.ref);
     });
 
     await batch.commit();
@@ -380,7 +473,89 @@ export async function startGame(
       senderId: 'system',
       senderName: 'System',
       senderAvatar: '🎨',
-      text: `খেলা শুরু হয়েছে! রাউন্ড ১: ${firstDrawer.name} আঁকছেন... চ্যাটে আন্দাজ করুন!`,
+      text: `খেলা শুরু হয়েছে! রাউন্ড ১: ${firstDrawer.name} আঁকার জন্য শব্দ বেছে নিচ্ছেন...`,
+      type: 'system',
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    throw error;
+  }
+}
+
+// Drawer chooses one word out of the 3 candidate words
+export async function chooseWord(
+  roomId: string,
+  chosenWord: WordItem,
+  room: RoomState,
+  players: Player[]
+): Promise<void> {
+  const acceptedAnswers = getAllAcceptedAnswers(chosenWord);
+  const hashes = await computeHashes(acceptedAnswers);
+  const drawTimeMs = (room.settings.drawTime || 60) * 1000;
+  const now = Date.now();
+  const wordHint = generateWordHint(chosenWord, room.settings.language);
+
+  try {
+    const batch = writeBatch(db);
+
+    const secretRef = doc(db, 'rooms', roomId, 'secrets', 'currentTurn');
+    batch.set(secretRef, {
+      turnNumber: room.turnNumber,
+      wordId: chosenWord.id,
+      wordEn: chosenWord.en,
+      wordBn: chosenWord.bn,
+      category: chosenWord.category,
+      hint: chosenWord.hint,
+      acceptedAlternatives: acceptedAnswers,
+      revealed: false,
+      createdAt: now,
+    });
+
+    const roomRef = doc(db, 'rooms', roomId);
+    batch.update(roomRef, {
+      status: 'drawing',
+      turnStartTime: now,
+      turnEndTime: now + drawTimeMs,
+      activeWordId: chosenWord.id,
+      activeCategory: chosenWord.category,
+      secretWordHashes: hashes,
+      wordHint,
+      revealedWord: null,
+      winnerId: null,
+      winnerName: null,
+      turnEndReason: null,
+      lastStrokeClearAt: now,
+      usedWordIds: [...(room.usedWordIds || []), chosenWord.id],
+      wordOptions: [],
+      preDrawRevealEnd: now + 3500, // Drawer gets 3.5s pre-draw big reveal
+    });
+
+    // Reset guess attempts to 4 for all players (1st free)
+    players.forEach((p) => {
+      const pRef = doc(db, 'rooms', roomId, 'players', p.id);
+      batch.update(pRef, {
+        attemptsLeft: 4,
+        hasGuessedCorrectly: false,
+      });
+    });
+
+    // Delete existing stroke documents
+    const strokesSnap = await getDocs(collection(db, 'rooms', roomId, 'strokes'));
+    strokesSnap.forEach((d) => {
+      batch.delete(d.ref);
+    });
+
+    await batch.commit();
+
+    const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
+    await setDoc(chatRef, {
+      id: chatRef.id,
+      turnNumber: room.turnNumber,
+      senderId: 'system',
+      senderName: 'System',
+      senderAvatar: '🎨',
+      text: `রাউন্ড ${room.currentRound} - পালা ${room.turnNumber}: ${room.currentDrawerName} আঁকা শুরু করেছেন! চ্যাটে আন্দাজ করুন।`,
       type: 'system',
       createdAt: Date.now(),
     });
@@ -436,12 +611,7 @@ export async function startNextTurn(
 
   const nextDrawerId = room.drawerOrder[finalDrawerIndex];
   const nextDrawer = players.find((p) => p.id === nextDrawerId) || players[0];
-
-  const word = pickNextWord(room.settings, room.usedWordIds || []);
-  const acceptedAnswers = getAllAcceptedAnswers(word);
-  const hashes = await computeHashes(acceptedAnswers);
-
-  const drawTimeMs = (room.settings.drawTime || 60) * 1000;
+  const wordOptions = pickThreeWords(room.settings, room.usedWordIds || []);
   const now = Date.now();
   const nextTurnNumber = room.turnNumber + 1;
 
@@ -451,49 +621,52 @@ export async function startNextTurn(
     const secretRef = doc(db, 'rooms', roomId, 'secrets', 'currentTurn');
     batch.set(secretRef, {
       turnNumber: nextTurnNumber,
-      wordId: word.id,
-      wordEn: word.en,
-      wordBn: word.bn,
-      category: word.category,
-      hint: word.hint,
-      acceptedAlternatives: acceptedAnswers,
+      drawerId: nextDrawer.id,
+      wordOptions,
       revealed: false,
       createdAt: now,
     });
 
     const roomRef = doc(db, 'rooms', roomId);
     batch.update(roomRef, {
-      status: 'drawing',
+      status: 'selecting_word',
       currentRound: nextRound,
       currentDrawerIndex: finalDrawerIndex,
       currentDrawerId: nextDrawer.id,
       currentDrawerName: nextDrawer.name,
       turnNumber: nextTurnNumber,
       turnStartTime: now,
-      turnEndTime: now + drawTimeMs,
-      activeWordId: word.id,
-      activeCategory: word.category,
-      secretWordHashes: hashes,
+      turnEndTime: 0,
+      activeWordId: '',
+      activeCategory: '',
+      secretWordHashes: [],
+      wordHint: null,
+      wordOptions,
       revealedWord: null,
       winnerId: null,
       winnerName: null,
       turnEndReason: null,
       lastStrokeClearAt: now,
-      usedWordIds: [...(room.usedWordIds || []), word.id],
     });
 
-    // Reset guess attempts for all players for the new turn
+    // Reset guess attempts for all players for the new turn (4 attempts, 1st free)
     players.forEach((p) => {
       const pRef = doc(db, 'rooms', roomId, 'players', p.id);
       batch.update(pRef, {
-        attemptsLeft: 3,
+        attemptsLeft: 4,
         hasGuessedCorrectly: false,
       });
     });
 
+    // Clean up previous strokes
+    const strokesSnap = await getDocs(collection(db, 'rooms', roomId, 'strokes'));
+    strokesSnap.forEach((d) => {
+      batch.delete(d.ref);
+    });
+
     await batch.commit();
 
-    // Announce next drawer
+    // Announce next drawer selection
     const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
     await setDoc(chatRef, {
       id: chatRef.id,
@@ -501,7 +674,7 @@ export async function startNextTurn(
       senderId: 'system',
       senderName: 'System',
       senderAvatar: '🎨',
-      text: `রাউন্ড ${nextRound} - পালা ${nextTurnNumber}: ${nextDrawer.name} আঁকছেন...`,
+      text: `রাউন্ড ${nextRound} - পালা ${nextTurnNumber}: ${nextDrawer.name} শব্দ বেছে নিচ্ছেন...`,
       type: 'system',
       createdAt: Date.now(),
     });
@@ -719,9 +892,12 @@ export async function submitChatMessage(
       return { isGuess: true, isCorrect: true };
     }
   } else {
-    // INCORRECT GUESS: Deduct 1 attempt. If negative marking, deduct 2 points.
-    const remainingAttempts = Math.max(0, player.attemptsLeft - 1);
-    const penalty = room.settings.negativeMarking ? 2 : 0;
+    // INCORRECT GUESS: Total 4 attempts.
+    // 1st attempt is completely FREE (no mark deduction).
+    // Attempts 2, 3, 4 apply penalty if negative marking is enabled.
+    const isFirstAttempt = (player.attemptsLeft || 0) >= 4;
+    const remainingAttempts = Math.max(0, (player.attemptsLeft || 0) - 1);
+    const penalty = isFirstAttempt ? 0 : room.settings.negativeMarking ? 2 : 0;
 
     try {
       await updateDoc(doc(db, 'rooms', roomId, 'players', player.id), {
@@ -849,11 +1025,33 @@ export async function sendStroke(
   }
 }
 
+export async function deleteStroke(
+  roomId: string,
+  strokeId: string
+): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'rooms', roomId, 'strokes', strokeId));
+  } catch (error) {
+    console.error('Error deleting stroke:', error);
+    handleFirestoreError(error, OperationType.DELETE, `rooms/${roomId}/strokes/${strokeId}`);
+  }
+}
+
 export async function clearCanvas(roomId: string): Promise<void> {
+  const now = Date.now();
   try {
     await updateDoc(doc(db, 'rooms', roomId), {
-      lastStrokeClearAt: Date.now(),
+      lastStrokeClearAt: now,
     });
+    // Also delete stroke docs to permanently free space and synchronize
+    const strokesSnap = await getDocs(collection(db, 'rooms', roomId, 'strokes'));
+    if (!strokesSnap.empty) {
+      const batch = writeBatch(db);
+      strokesSnap.forEach((d) => {
+        batch.delete(d.ref);
+      });
+      await batch.commit();
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
   }
@@ -900,7 +1098,8 @@ export function listenToPlayers(
 export function listenToStrokes(
   roomId: string,
   turnNumber: number,
-  callback: (strokes: Stroke[]) => void
+  callback: (strokes: Stroke[]) => void,
+  lastClearTime: number = 0
 ) {
   const strokesRef = collection(db, 'rooms', roomId, 'strokes');
   return onSnapshot(
@@ -908,7 +1107,9 @@ export function listenToStrokes(
     (snap) => {
       const allStrokes = snap.docs.map((d) => d.data() as Stroke);
       allStrokes.sort((a, b) => (a.seq || 0) - (b.seq || 0));
-      const turnStrokes = allStrokes.filter((s) => s.turnNumber === turnNumber);
+      const turnStrokes = allStrokes.filter(
+        (s) => s.turnNumber === turnNumber && (!s.isDeleted) && (s.seq || 0) >= (lastClearTime || 0)
+      );
       callback(turnStrokes);
     },
     (error) => {

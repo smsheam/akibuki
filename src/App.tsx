@@ -359,7 +359,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-gradient-to-b from-amber-500/5 via-slate-50 to-indigo-500/5 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
+    <div className="min-h-screen flex flex-col bg-white dark:bg-black text-black dark:text-white transition-colors">
       {/* Top Navbar with Home button */}
       <Navbar
         language={language}
@@ -471,8 +471,8 @@ export default function App() {
       </main>
 
       {/* Persistent Bottom Footer: Developed by SMSHEAM */}
-      <footer className="w-full py-2.5 text-center shrink-0 border-t border-slate-200/50 dark:border-slate-800/50 bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm select-none">
-        <p className="text-[11px] font-black tracking-widest uppercase bg-gradient-to-r from-amber-600 via-rose-600 to-indigo-600 bg-clip-text text-transparent">
+      <footer className="w-full py-2.5 text-center shrink-0 border-t border-zinc-200 dark:border-zinc-800 bg-white/90 dark:bg-black/90 backdrop-blur-sm select-none">
+        <p className="text-[11px] font-black tracking-widest uppercase text-zinc-600 dark:text-zinc-400 font-mono">
           Developed by SMSHEAM
         </p>
       </footer>

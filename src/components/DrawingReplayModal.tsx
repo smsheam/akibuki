@@ -99,12 +99,12 @@ export const DrawingReplayModal: React.FC<DrawingReplayModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
-      <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-200 dark:border-slate-800">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in text-black dark:text-white">
+      <div className="relative w-full max-w-lg bg-white dark:bg-black rounded-3xl p-5 sm:p-6 shadow-2xl border-2 border-zinc-200 dark:border-zinc-800">
         {/* Close Button */}
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 p-2 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+          className="absolute top-4 right-4 p-2 rounded-full text-zinc-400 hover:text-black dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition cursor-pointer"
         >
           <X className="w-5 h-5" />
         </button>
@@ -113,17 +113,17 @@ export const DrawingReplayModal: React.FC<DrawingReplayModalProps> = ({
         <div className="flex items-center gap-2 mb-3">
           <span className="text-2xl">{drawerAvatar}</span>
           <div>
-            <h3 className="font-black text-slate-900 dark:text-white text-base">
+            <h3 className="font-black text-black dark:text-white text-base">
               {drawerName} এর আঁকার রিপ্লে
             </h3>
-            <p className="text-xs font-bold text-amber-500">
+            <p className="text-xs font-bold text-zinc-500">
               {wordBn} ({wordEn})
             </p>
           </div>
         </div>
 
         {/* Replay Canvas */}
-        <div className="w-full aspect-video rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden bg-white shadow-inner mb-4">
+        <div className="w-full aspect-video rounded-2xl border-2 border-zinc-300 dark:border-zinc-700 overflow-hidden bg-white shadow-inner mb-4">
           <canvas ref={canvasRef} className="w-full h-full block" />
         </div>
 
@@ -132,22 +132,22 @@ export const DrawingReplayModal: React.FC<DrawingReplayModalProps> = ({
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsPlaying(!isPlaying)}
-              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-500 text-white font-bold text-xs shadow-md shadow-amber-500/20 active:scale-95 transition"
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-black hover:bg-zinc-800 text-white dark:bg-white dark:text-black dark:hover:bg-zinc-200 font-bold text-xs border border-black dark:border-white shadow-md active:scale-95 transition cursor-pointer"
             >
-              {isPlaying ? <Pause className="w-4 h-4 fill-white" /> : <Play className="w-4 h-4 fill-white" />}
+              {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
               <span>{isPlaying ? 'বিরতি' : 'চালান'}</span>
             </button>
 
             <button
               onClick={handleRestart}
-              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 font-bold transition"
+              className="p-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-black dark:text-white hover:bg-zinc-200 dark:hover:bg-zinc-700 font-bold border border-zinc-300 dark:border-zinc-700 transition cursor-pointer"
               title="শুরু থেকে দেখুন"
             >
               <RotateCcw className="w-4 h-4" />
             </button>
           </div>
 
-          <span className="text-xs font-bold text-slate-400">
+          <span className="text-xs font-bold text-zinc-400">
             স্ট্রোক: {currentStrokeIndex + 1} / {strokes.length || 1}
           </span>
         </div>
