@@ -298,8 +298,8 @@ export async function startGame(
   room: RoomState,
   players: Player[]
 ): Promise<void> {
-  if (players.length < 2) {
-    throw new Error('খেলার জন্য অন্তত ২ জন খেলোয়াড় প্রয়োজন!');
+  if (players.length < 1) {
+    throw new Error('খেলার জন্য অন্তত ১ জন খেলোয়াড় প্রয়োজন!');
   }
 
   // Shuffle players to randomize drawing order
@@ -525,11 +525,13 @@ export async function submitChatMessage(
   const isDrawingTurn = room.status === 'drawing';
   const isDrawer = player.id === room.currentDrawerId;
   const isEmojiOnly = /^[\p{Emoji}\s]+$/u.test(text);
+  const isSoloTest = (room.drawerOrder?.length || 0) <= 1;
 
-  // If not drawing, or sender is drawer, or quick reaction, or emoji only, or player has no attempts left:
+  // If not drawing, or quick reaction, or emoji only, or player has no attempts left:
+  // Note: if solo testing, drawer is allowed to test guesses as well
   const cannotGuess =
     !isDrawingTurn ||
-    isDrawer ||
+    (isDrawer && !isSoloTest) ||
     isQuickReaction ||
     isEmojiOnly ||
     player.attemptsLeft <= 0 ||
@@ -537,57 +539,99 @@ export async function submitChatMessage(
 
   if (cannotGuess) {
     // Post as normal chat message
-    const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
-    await setDoc(chatRef, {
-      id: chatRef.id,
-      turnNumber: room.turnNumber,
-      senderId: player.id,
-      senderName: player.name,
-      senderAvatar: player.avatar,
-      text,
-      type: 'chat',
-      createdAt: Date.now(),
-      isQuickReaction,
-    });
+    try {
+      const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
+      await setDoc(chatRef, {
+        id: chatRef.id,
+        turnNumber: room.turnNumber,
+        senderId: player.id,
+        senderName: player.name,
+        senderAvatar: player.avatar,
+        text,
+        type: 'chat',
+        createdAt: Date.now(),
+        isQuickReaction,
+      });
+    } catch (err) {
+      console.error('Error posting normal chat message:', err);
+    }
     return { isGuess: false, isCorrect: false };
   }
 
-  // It is an eligible guess! Check against SHA-256 hashes of the secret word
+  // Check guess:
+  // 1. Check SHA-256 hash match against room.secretWordHashes
+  const normInput = normalizeText(text);
   const guessHash = await sha256Hex(text);
-  const isCorrect = room.secretWordHashes.includes(guessHash);
+  let isCorrect = (room.secretWordHashes || []).includes(guessHash);
+
+  // 2. Direct comparison with active word in WORDS_DATABASE (100% reliable)
+  if (!isCorrect && room.activeWordId) {
+    const wordItem = WORDS_DATABASE.find((w) => w.id === room.activeWordId);
+    if (wordItem) {
+      const accepted = getAllAcceptedAnswers(wordItem).map((a) => normalizeText(a));
+      if (
+        accepted.includes(normInput) ||
+        normalizeText(wordItem.en) === normInput ||
+        normalizeText(wordItem.bn) === normInput
+      ) {
+        isCorrect = true;
+      }
+    }
+  }
+
+  // 3. Fallback: check against secrets document if needed
+  if (!isCorrect) {
+    try {
+      const secretSnap = await getDoc(doc(db, 'rooms', roomId, 'secrets', 'currentTurn'));
+      if (secretSnap.exists()) {
+        const sec = secretSnap.data();
+        const accepted = (sec.acceptedAlternatives || []).map((a: string) => normalizeText(a));
+        if (
+          accepted.includes(normInput) ||
+          normalizeText(sec.wordEn) === normInput ||
+          normalizeText(sec.wordBn) === normInput
+        ) {
+          isCorrect = true;
+        }
+      }
+    } catch {
+      // Continue
+    }
+  }
 
   if (isCorrect) {
-    // ATOMIC TRANSACTION: End turn, award points (+10 guesser, +5 drawer), reveal word
+    // Correct Guess Handling
+    // Get revealed word details from database
+    const wordObj = WORDS_DATABASE.find((w) => w.id === room.activeWordId);
+    const revealed: RevealedWord = {
+      en: wordObj ? wordObj.en : 'Secret Word',
+      bn: wordObj ? wordObj.bn : 'গোপন শব্দ',
+      category: wordObj ? wordObj.category : (room.activeCategory || ''),
+      hint: wordObj ? wordObj.hint : '',
+    };
+
+    const isSamePlayer = player.id === room.currentDrawerId;
+
     try {
       await runTransaction(db, async (transaction) => {
-        const roomDoc = await transaction.get(doc(db, 'rooms', roomId));
+        // ALL READS FIRST
+        const roomRef = doc(db, 'rooms', roomId);
+        const roomDoc = await transaction.get(roomRef);
         if (!roomDoc.exists()) return;
         const currentRoom = roomDoc.data() as RoomState;
-
-        // If turn has already ended by another transaction, abort
         if (currentRoom.status !== 'drawing') return;
 
-        // Get secret word details
-        const secretDoc = await transaction.get(doc(db, 'rooms', roomId, 'secrets', 'currentTurn'));
-        let revealed: RevealedWord = {
-          en: 'Secret Word',
-          bn: 'গোপন শব্দ',
-          category: 'General',
-          hint: '',
-        };
-        if (secretDoc.exists()) {
-          const s = secretDoc.data();
-          revealed = {
-            en: s.wordEn,
-            bn: s.wordBn,
-            category: s.category || '',
-            hint: s.hint || '',
-          };
-          transaction.update(secretDoc.ref, { revealed: true });
+        const guesserRef = doc(db, 'rooms', roomId, 'players', player.id);
+        const guesserSnap = await transaction.get(guesserRef);
+
+        let drawerSnap = null;
+        const drawerRef = doc(db, 'rooms', roomId, 'players', currentRoom.currentDrawerId);
+        if (!isSamePlayer) {
+          drawerSnap = await transaction.get(drawerRef);
         }
 
-        // 1. Update room status to turn_ended immediately
-        transaction.update(roomDoc.ref, {
+        // ALL WRITES AFTER READS
+        transaction.update(roomRef, {
           status: 'turn_ended',
           winnerId: player.id,
           winnerName: player.name,
@@ -595,31 +639,37 @@ export async function submitChatMessage(
           revealedWord: revealed,
         });
 
-        // 2. Award +10 points to correct guesser
-        const guesserRef = doc(db, 'rooms', roomId, 'players', player.id);
-        const guesserSnap = await transaction.get(guesserRef);
-        if (guesserSnap.exists()) {
-          const gData = guesserSnap.data() as Player;
-          transaction.update(guesserRef, {
-            totalPoints: (gData.totalPoints || 0) + 10,
-            correctGuesses: (gData.correctGuesses || 0) + 1,
-            hasGuessedCorrectly: true,
-          });
+        if (isSamePlayer) {
+          // Solo testing: player is both drawer and guesser
+          if (guesserSnap.exists()) {
+            const pData = guesserSnap.data() as Player;
+            transaction.update(guesserRef, {
+              totalPoints: (pData.totalPoints || 0) + 10,
+              correctGuesses: (pData.correctGuesses || 0) + 1,
+              successfulDrawings: (pData.successfulDrawings || 0) + 1,
+              hasGuessedCorrectly: true,
+            });
+          }
+        } else {
+          // Normal multiplayer: different players
+          if (guesserSnap.exists()) {
+            const gData = guesserSnap.data() as Player;
+            transaction.update(guesserRef, {
+              totalPoints: (gData.totalPoints || 0) + 10,
+              correctGuesses: (gData.correctGuesses || 0) + 1,
+              hasGuessedCorrectly: true,
+            });
+          }
+          if (drawerSnap && drawerSnap.exists()) {
+            const dData = drawerSnap.data() as Player;
+            transaction.update(drawerRef, {
+              totalPoints: (dData.totalPoints || 0) + 5,
+              drawingPoints: (dData.drawingPoints || 0) + 5,
+              successfulDrawings: (dData.successfulDrawings || 0) + 1,
+            });
+          }
         }
 
-        // 3. Award +5 points to drawer
-        const drawerRef = doc(db, 'rooms', roomId, 'players', currentRoom.currentDrawerId);
-        const drawerSnap = await transaction.get(drawerRef);
-        if (drawerSnap.exists()) {
-          const dData = drawerSnap.data() as Player;
-          transaction.update(drawerRef, {
-            totalPoints: (dData.totalPoints || 0) + 5,
-            drawingPoints: (dData.drawingPoints || 0) + 5,
-            successfulDrawings: (dData.successfulDrawings || 0) + 1,
-          });
-        }
-
-        // 4. Post highlighted correct chat message
         const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
         transaction.set(chatRef, {
           id: chatRef.id,
@@ -634,8 +684,38 @@ export async function submitChatMessage(
       });
 
       return { isGuess: true, isCorrect: true };
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    } catch (txError) {
+      console.warn('Transaction error in correct guess, using fallback writes:', txError);
+      // Fallback direct writes to ensure UI transitions smoothly
+      try {
+        await updateDoc(doc(db, 'rooms', roomId), {
+          status: 'turn_ended',
+          winnerId: player.id,
+          winnerName: player.name,
+          turnEndReason: 'correct_guess',
+          revealedWord: revealed,
+        });
+
+        await updateDoc(doc(db, 'rooms', roomId, 'players', player.id), {
+          totalPoints: (player.totalPoints || 0) + 10,
+          correctGuesses: (player.correctGuesses || 0) + 1,
+          hasGuessedCorrectly: true,
+        });
+
+        const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
+        await setDoc(chatRef, {
+          id: chatRef.id,
+          turnNumber: room.turnNumber,
+          senderId: player.id,
+          senderName: player.name,
+          senderAvatar: player.avatar,
+          text,
+          type: 'correct',
+          createdAt: Date.now(),
+        });
+      } catch (fbErr) {
+        console.error('Fallback update failed:', fbErr);
+      }
       return { isGuess: true, isCorrect: true };
     }
   } else {
@@ -647,7 +727,7 @@ export async function submitChatMessage(
       await updateDoc(doc(db, 'rooms', roomId, 'players', player.id), {
         attemptsLeft: remainingAttempts,
         incorrectGuesses: (player.incorrectGuesses || 0) + 1,
-        totalPoints: (player.totalPoints || 0) - penalty,
+        totalPoints: Math.max(0, (player.totalPoints || 0) - penalty),
       });
 
       const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
@@ -664,6 +744,7 @@ export async function submitChatMessage(
 
       return { isGuess: true, isCorrect: false, remainingAttempts };
     } catch (error) {
+      console.error('Error posting wrong guess:', error);
       handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}/players/${player.id}`);
       return { isGuess: true, isCorrect: false, remainingAttempts };
     }
@@ -674,43 +755,36 @@ export async function submitChatMessage(
 export async function handleTurnTimeout(roomId: string, room: RoomState): Promise<void> {
   if (room.status !== 'drawing') return;
 
+  const wordObj = WORDS_DATABASE.find((w) => w.id === room.activeWordId);
+  const revealed: RevealedWord = {
+    en: wordObj ? wordObj.en : 'Secret Word',
+    bn: wordObj ? wordObj.bn : 'গোপন শব্দ',
+    category: wordObj ? wordObj.category : (room.activeCategory || ''),
+    hint: wordObj ? wordObj.hint : '',
+  };
+
   try {
     await runTransaction(db, async (transaction) => {
-      const roomDoc = await transaction.get(doc(db, 'rooms', roomId));
+      // ALL READS FIRST
+      const roomRef = doc(db, 'rooms', roomId);
+      const roomDoc = await transaction.get(roomRef);
       if (!roomDoc.exists()) return;
       const currentRoom = roomDoc.data() as RoomState;
       if (currentRoom.status !== 'drawing') return;
 
-      const secretDoc = await transaction.get(doc(db, 'rooms', roomId, 'secrets', 'currentTurn'));
-      let revealed: RevealedWord = {
-        en: 'Secret Word',
-        bn: 'গোপন শব্দ',
-        category: 'General',
-        hint: '',
-      };
-      if (secretDoc.exists()) {
-        const s = secretDoc.data();
-        revealed = {
-          en: s.wordEn,
-          bn: s.wordBn,
-          category: s.category || '',
-          hint: s.hint || '',
-        };
-        transaction.update(secretDoc.ref, { revealed: true });
-      }
-
-      // Drawer loses 3 points per spec: "Deduct 3 points from the drawer. Award 0 points to all guessers."
       const drawerRef = doc(db, 'rooms', roomId, 'players', currentRoom.currentDrawerId);
       const drawerSnap = await transaction.get(drawerRef);
+
+      // ALL WRITES AFTER READS
       if (drawerSnap.exists()) {
         const dData = drawerSnap.data() as Player;
         transaction.update(drawerRef, {
-          totalPoints: (dData.totalPoints || 0) - 3,
+          totalPoints: Math.max(0, (dData.totalPoints || 0) - 3),
           failedDrawings: (dData.failedDrawings || 0) + 1,
         });
       }
 
-      transaction.update(roomDoc.ref, {
+      transaction.update(roomRef, {
         status: 'turn_ended',
         winnerId: null,
         winnerName: null,
@@ -731,7 +805,30 @@ export async function handleTurnTimeout(roomId: string, room: RoomState): Promis
       });
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `rooms/${roomId}`);
+    console.warn('Transaction error in handleTurnTimeout, using fallback:', error);
+    try {
+      await updateDoc(doc(db, 'rooms', roomId), {
+        status: 'turn_ended',
+        winnerId: null,
+        winnerName: null,
+        turnEndReason: 'timeout',
+        revealedWord: revealed,
+      });
+
+      const chatRef = doc(collection(db, 'rooms', roomId, 'chat'));
+      await setDoc(chatRef, {
+        id: chatRef.id,
+        turnNumber: room.turnNumber,
+        senderId: 'system',
+        senderName: 'System',
+        senderAvatar: '⏰',
+        text: `সময় শেষ! সঠিক শব্দ ছিল: ${revealed.bn} (${revealed.en})`,
+        type: 'system',
+        createdAt: Date.now(),
+      });
+    } catch (fbErr) {
+      console.error('Fallback timeout update failed:', fbErr);
+    }
   }
 }
 
@@ -806,15 +903,16 @@ export function listenToStrokes(
   callback: (strokes: Stroke[]) => void
 ) {
   const strokesRef = collection(db, 'rooms', roomId, 'strokes');
-  const q = query(strokesRef, orderBy('seq', 'asc'));
   return onSnapshot(
-    q,
+    strokesRef,
     (snap) => {
       const allStrokes = snap.docs.map((d) => d.data() as Stroke);
+      allStrokes.sort((a, b) => (a.seq || 0) - (b.seq || 0));
       const turnStrokes = allStrokes.filter((s) => s.turnNumber === turnNumber);
       callback(turnStrokes);
     },
     (error) => {
+      console.error('Error listening to strokes:', error);
       handleFirestoreError(error, OperationType.LIST, `rooms/${roomId}/strokes`);
     }
   );
@@ -825,14 +923,15 @@ export function listenToChat(
   callback: (messages: ChatMessage[]) => void
 ) {
   const chatRef = collection(db, 'rooms', roomId, 'chat');
-  const q = query(chatRef, orderBy('createdAt', 'asc'));
   return onSnapshot(
-    q,
+    chatRef,
     (snap) => {
       const msgs = snap.docs.map((d) => d.data() as ChatMessage);
+      msgs.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
       callback(msgs);
     },
     (error) => {
+      console.error('Error listening to chat:', error);
       handleFirestoreError(error, OperationType.LIST, `rooms/${roomId}/chat`);
     }
   );

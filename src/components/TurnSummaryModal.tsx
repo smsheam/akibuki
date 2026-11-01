@@ -55,7 +55,7 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
       setSecondsLeft((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          if (isHost) {
+          if (isHost || players.length <= 1) {
             onStartNextTurn();
           }
           return 0;
@@ -171,7 +171,7 @@ export const TurnSummaryModal: React.FC<TurnSummaryModalProps> = ({
               <span>{t.nextTurnIn} {secondsLeft}s</span>
             </div>
 
-            {isHost && (
+            {(isHost || players.length <= 1) && (
               <button
                 onClick={onStartNextTurn}
                 className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 text-white font-bold text-xs shadow-md shadow-rose-500/20 active:scale-95 transition flex items-center gap-1"

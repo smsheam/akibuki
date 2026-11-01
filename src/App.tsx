@@ -87,6 +87,7 @@ export default function App() {
   // Drawing timer remaining
   const [timeRemaining, setTimeRemaining] = useState<number>(60);
   const lastTickSecondRef = useRef<number>(-1);
+  const isHandlingTimeoutRef = useRef<boolean>(false);
 
   // Dark mode effect
   useEffect(() => {
@@ -195,7 +196,10 @@ export default function App() {
 
   // Drawing Timer Tick & Timeout handling
   useEffect(() => {
-    if (!room || room.status !== 'drawing') return;
+    if (!room || room.status !== 'drawing') {
+      isHandlingTimeoutRef.current = false;
+      return;
+    }
 
     const interval = setInterval(() => {
       const now = Date.now();
@@ -208,15 +212,16 @@ export default function App() {
         playTickSound(soundEnabled);
       }
 
-      // If host and time expired, trigger timeout transition
-      if (left === 0 && isHost && room.status === 'drawing') {
+      // If time expired, trigger timeout transition (idempotent, safe for any client)
+      if (left <= 0 && room.status === 'drawing' && !isHandlingTimeoutRef.current) {
+        isHandlingTimeoutRef.current = true;
         playWrongSound(soundEnabled);
         handleTurnTimeout(room.id, room);
       }
     }, 500);
 
     return () => clearInterval(interval);
-  }, [room, isHost, soundEnabled]);
+  }, [room, soundEnabled]);
 
   // Sound effects on turn complete
   useEffect(() => {
